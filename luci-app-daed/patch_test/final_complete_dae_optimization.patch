@@ -790,15 +790,6 @@ diff --git a/control/udp_task_pool.go b/control/udp_task_pool.go
 index 08b02d7..89fd42a 100644
 --- a/control/udp_task_pool.go
 +++ b/control/udp_task_pool.go
-@@ -1,7 +1,7 @@
- /*
- *  SPDX-License-Identifier: AGPL-3.0-only
- *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
--*/
-+ */
- 
- package control
- 
 @@ -11,7 +11,11 @@ import (
  	"time"
  )
