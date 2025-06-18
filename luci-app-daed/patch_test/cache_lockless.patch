@@ -156,203 +156,11 @@ index e57cbd8..cc0c2cf 100644
  }
  
  func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
-diff --git a/control/dns_async.go b/control/dns_async.go
-new file mode 100644
-index 0000000..e4ffd1b
---- /dev/null
-+++ b/control/dns_async.go
-@@ -0,0 +1,186 @@
-+package control
-+
-+import (
-+	"context"
-+	"fmt"
-+	"sync"
-+	"time"
-+
-+	dnsmessage "github.com/miekg/dns"
-+)
-+
-+// AsyncDNSRequest 异步DNS请求
-+type AsyncDNSRequest struct {
-+	key        string
-+	data       []byte
-+	response   chan *dnsmessage.Msg
-+	err        chan error
-+	ctx        context.Context
-+	created    time.Time
-+}
-+
-+// AsyncDNSProcessor DNS异步处理器
-+type AsyncDNSProcessor struct {
-+	requestQueue  chan *AsyncDNSRequest
-+	workers       int
-+	workerPool    sync.WaitGroup
-+	ctx           context.Context
-+	cancel        context.CancelFunc
-+	inFlight      sync.Map // key -> []*AsyncDNSRequest (pending requests for same key)
-+}
-+
-+// NewAsyncDNSProcessor 创建异步DNS处理器
-+func NewAsyncDNSProcessor(workers int) *AsyncDNSProcessor {
-+	ctx, cancel := context.WithCancel(context.Background())
-+	
-+	processor := &AsyncDNSProcessor{
-+		requestQueue: make(chan *AsyncDNSRequest, 1000),
-+		workers:      workers,
-+		ctx:          ctx,
-+		cancel:       cancel,
-+	}
-+	
-+	// 启动工作协程
-+	for i := 0; i < workers; i++ {
-+		processor.workerPool.Add(1)
-+		go processor.worker(i)
-+	}
-+	
-+	return processor
-+}
-+
-+// SubmitRequest 提交异步DNS请求
-+func (p *AsyncDNSProcessor) SubmitRequest(key string, data []byte) (*dnsmessage.Msg, error) {
-+	req := &AsyncDNSRequest{
-+		key:      key,
-+		data:     data,
-+		response: make(chan *dnsmessage.Msg, 1),
-+		err:      make(chan error, 1),
-+		ctx:      context.Background(),
-+		created:  time.Now(),
-+	}
-+	
-+	// 直接提交到工作队列，不做批处理优化（简化实现）
-+	select {
-+	case p.requestQueue <- req:
-+	case <-time.After(100 * time.Millisecond):
-+		return nil, context.DeadlineExceeded
-+	}
-+	
-+	// 等待响应
-+	select {
-+	case resp := <-req.response:
-+		return resp, nil
-+	case err := <-req.err:
-+		return nil, err
-+	case <-time.After(1 * time.Second): // 减少超时时间
-+		return nil, context.DeadlineExceeded
-+	}
-+}
-+
-+// worker 工作协程
-+func (p *AsyncDNSProcessor) worker(id int) {
-+	defer p.workerPool.Done()
-+	
-+	for {
-+		select {
-+		case req := <-p.requestQueue:
-+			p.processRequest(req)
-+		case <-p.ctx.Done():
-+			return
-+		}
-+	}
-+}
-+
-+// processRequest 处理DNS请求
-+func (p *AsyncDNSProcessor) processRequest(req *AsyncDNSRequest) {
-+	defer func() {
-+		if r := recover(); r != nil {
-+			select {
-+			case req.err <- fmt.Errorf("panic in DNS processing: %v", r):
-+			default:
-+			}
-+		}
-+	}()
-+	
-+	// 解析DNS消息
-+	var msg dnsmessage.Msg
-+	if err := msg.Unpack(req.data); err != nil {
-+		select {
-+		case req.err <- fmt.Errorf("failed to unpack DNS message: %w", err):
-+		default:
-+		}
-+		return
-+	}
-+	
-+	// 这里应该调用真实的DNS转发逻辑
-+	// 为了简化，我们先创建一个基本的响应
-+	resp := &dnsmessage.Msg{
-+		MsgHdr: dnsmessage.MsgHdr{
-+			Id:       msg.Id,
-+			Response: true,
-+			OpCode:   msg.OpCode,
-+			RCode:    dnsmessage.RCodeSuccess,
-+		},
-+		Question: msg.Question,
-+	}
-+	
-+	// 添加一个简单的A记录答案（示例）
-+	if len(msg.Question) > 0 && msg.Question[0].Type == dnsmessage.TypeA {
-+		resp.Answer = append(resp.Answer, &dnsmessage.AResource{
-+			Hdr: dnsmessage.ResourceHeader{
-+				Name:  msg.Question[0].Name,
-+				Type:  dnsmessage.TypeA,
-+				Class: dnsmessage.ClassINET,
-+				TTL:   300,
-+			},
-+			A: [4]byte{8, 8, 8, 8}, // 示例IP
-+		})
-+	}
-+	
-+	// 发送响应
-+	select {
-+	case req.response <- resp:
-+	default:
-+		// 如果channel已满，发送错误
-+		select {
-+		case req.err <- context.DeadlineExceeded:
-+		default:
-+		}
-+	}
-+}
-+
-+// Close 关闭处理器
-+func (p *AsyncDNSProcessor) Close() error {
-+	p.cancel()
-+	close(p.requestQueue)
-+	p.workerPool.Wait()
-+	return nil
-+}
-+
-+// AsyncDNSController 异步DNS控制器（用于替换原有的同步机制）
-+type AsyncDNSController struct {
-+	*DnsController
-+	asyncProcessor *AsyncDNSProcessor
-+}
-+
-+// NewAsyncDNSController 创建异步DNS控制器
-+func NewAsyncDNSController(original *DnsController) *AsyncDNSController {
-+	return &AsyncDNSController{
-+		DnsController:  original,
-+		asyncProcessor: NewAsyncDNSProcessor(20), // 20个工作协程
-+	}
-+}
-+
-+// AsyncHandleDNS 异步处理DNS请求
-+func (c *AsyncDNSController) AsyncHandleDNS(key string, data []byte) (*dnsmessage.Msg, error) {
-+	return c.asyncProcessor.SubmitRequest(key, data)
-+}
-+
-+// Close 关闭异步控制器
-+func (c *AsyncDNSController) Close() error {
-+	if c.asyncProcessor != nil {
-+		return c.asyncProcessor.Close()
-+	}
-+	return nil
-+}
 diff --git a/control/dns_control.go b/control/dns_control.go
-index 6a55368..1929c30 100644
+index 6a55368..664d83c 100644
 --- a/control/dns_control.go
 +++ b/control/dns_control.go
-@@ -76,11 +76,12 @@ type DnsController struct {
+@@ -76,11 +76,9 @@ type DnsController struct {
  	timeoutExceedCallback func(dialArgument *dialArgument, err error)
  
  	fixedDomainTtl map[string]int
@@ -364,13 +172,10 @@ index 6a55368..1929c30 100644
 +	// 使用sync.Map代替mutex+map，减少锁竞争
 +	dnsCache            sync.Map // map[string]*DnsCache
 +	dnsForwarderCache   sync.Map // map[dnsForwarderKey]DnsForwarder
-+	
-+	// 异步DNS处理器 - 替换handlingState锁机制
-+	asyncProcessor *AsyncDNSProcessor
  }
  
  type handlingState struct {
-@@ -119,11 +120,11 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
+@@ -119,11 +117,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
  		bestDialerChooser:     option.BestDialerChooser,
  		timeoutExceedCallback: option.TimeoutExceedCallback,
  
@@ -381,13 +186,10 @@ index 6a55368..1929c30 100644
 -		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
 +		fixedDomainTtl: option.FixedDomainTtl,
 +		// 使用sync.Map，无需初始化
-+		
-+		// 初始化异步DNS处理器
-+		asyncProcessor: NewAsyncDNSProcessor(20),
  	}, nil
  }
  
-@@ -133,20 +134,15 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
+@@ -133,20 +128,15 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
  }
  
  func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
@@ -412,7 +214,7 @@ index 6a55368..1929c30 100644
  	var deadline time.Time
  	if !ignoreFixedTtl {
  		deadline = cache.Deadline
-@@ -287,21 +283,18 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
+@@ -287,21 +277,18 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
  	deadline, originalDeadline := deadlineFunc(now, host)
  
  	cacheKey := c.cacheKey(fqdn, dnsTyp)
@@ -438,59 +240,7 @@ index 6a55368..1929c30 100644
  	}
  	if err = c.cacheAccessCallback(cache); err != nil {
  		return err
-@@ -458,6 +451,51 @@ func (c *DnsController) handle_(
- 		return c.sendReject_(dnsMessage, req)
- 	}
- 
-+	// 使用异步处理器处理DNS请求，替换handlingState锁机制
-+	if c.asyncProcessor != nil {
-+		// 检查缓存
-+		if resp := c.LookupDnsRespCache_(dnsMessage, cacheKey, false); resp != nil {
-+			// Send cache to client directly.
-+			if needResp {
-+				if err = sendPkt(c.log, resp, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-+					return fmt.Errorf("failed to write cached DNS resp: %w", err)
-+				}
-+			}
-+			if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
-+				q := dnsMessage.Question[0]
-+				c.log.Debugf("UDP(DNS) %v <-> Cache: %v %v",
-+					RefineSourceToShow(req.realSrc, req.realDst.Addr()), strings.ToLower(q.Name), QtypeToString(q.Qtype),
-+				)
-+			}
-+			return nil
-+		}
-+		
-+		// 异步处理DNS请求
-+		data, err := dnsMessage.Pack()
-+		if err != nil {
-+			return fmt.Errorf("pack DNS packet: %w", err)
-+		}
-+		
-+		// 使用异步处理器提交请求
-+		resp, err := c.asyncProcessor.SubmitRequest(cacheKey, data)
-+		if err != nil {
-+			return fmt.Errorf("async DNS processing failed: %w", err)
-+		}
-+		
-+		// 处理响应
-+		if needResp && resp != nil {
-+			respData, err := resp.Pack()
-+			if err != nil {
-+				return fmt.Errorf("pack DNS response: %w", err)
-+			}
-+			if err = sendPkt(c.log, respData, req.realDst, req.realSrc, req.src, req.lConn); err != nil {
-+				return fmt.Errorf("failed to write DNS resp: %w", err)
-+			}
-+		}
-+		return nil
-+	}
-+	
-+	// 回退到原有的同步处理机制（如果异步处理器未初始化）
- 	// No parallel for the same lookup.
- 	handlingState_, _ := c.handling.LoadOrStore(cacheKey, new(handlingState))
- 	handlingState := handlingState_.(*handlingState)
-@@ -577,18 +615,25 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
+@@ -577,18 +564,25 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
  	ctxDial, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
  	defer cancel()
  
@@ -524,18 +274,6 @@ index 6a55368..1929c30 100644
  
  	defer func() {
  		if !connClosed {
-@@ -691,3 +736,11 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
- 	}
- 	return nil
- }
-+
-+// Close 关闭DNS控制器和相关资源
-+func (c *DnsController) Close() error {
-+	if c.asyncProcessor != nil {
-+		return c.asyncProcessor.Close()
-+	}
-+	return nil
-+}
 diff --git a/control/udp_endpoint_pool.go b/control/udp_endpoint_pool.go
 index 5fd972a..cb87016 100644
 --- a/control/udp_endpoint_pool.go
