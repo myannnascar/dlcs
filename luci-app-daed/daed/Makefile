@@ -28,6 +28,17 @@ PKG_BUILD_DEPENDS:=golang/host bpf-headers node/host
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-mips16
 
+# 处理 BPF 架构映射
+ifeq ($(ARCH),x86_64)
+  BPF_KARCH:=x86
+else ifeq ($(ARCH),i386)
+  BPF_KARCH:=x86
+else ifeq ($(ARCH),aarch64)
+  BPF_KARCH:=arm64
+else
+  BPF_KARCH:=$(ARCH)
+endif
+
 GO_PKG:=github.com/daeuniverse/dae-wing
 GO_PKG_LDFLAGS:= \
 	-s -w -X '$(GO_PKG)/db.AppDescription=$(PKG_NAME) is a integration solution of dae, API and UI.'
@@ -45,8 +56,6 @@ GO_PKG_TARGET_VARS+= \
 	GOEXPERIMENT=greenteagc
 GO_PKG_DEFAULT_LDFLAGS:=-w -s -linkmode external -extldflags '-static'
 
-TAR_CMD=$(HOST_TAR) -C $(BUILD_DIR)/ $(TAR_OPTIONS)
-
 define Package/daed/Default
   SECTION:=net
   CATEGORY:=Network
@@ -57,7 +66,6 @@ endef
 define Package/daed
   $(call Package/daed/Default)
   TITLE:=A Modern Dashboard For dae
-  # You need enable KERNEL_DEBUG_INFO_BTF and KERNEL_BPF_EVENTS
   DEPENDS:=$(GO_ARCH_DEPENDS) $(BPF_DEPENDS) \
     +ca-bundle +kmod-sched-core +kmod-sched-bpf +kmod-xdp-sockets-diag \
     +kmod-veth +v2ray-geoip +v2ray-geosite
@@ -81,18 +89,17 @@ define Build/Prepare
 		pushd $(PKG_BUILD_DIR)/dae-core ; \
 		git submodule update --init ; \
 		go get -u=patch ; \
-		go get github.com/cilium/ebpf@latest ; \
 		go mod tidy ; \
 		popd ; \
 		pushd $(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/wing ; \
 		go mod tidy ; \
 		popd ; \
-		( \
-		    cd $(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION) && \
-		    npm install -g pnpm && \
-		    pnpm install && \
-		    pnpm build \
-		) ; \
+		pushd $(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION) ; \
+		npm install -g pnpm ; \
+		pnpm config set engine-strict false ; \
+		pnpm install --shamefully-hoist --no-frozen-lockfile ; \
+		pnpm build ; \
+		popd ; \
 		mkdir -p $(PKG_BUILD_DIR)/webrender/web ; \
 		cp -rf $(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/dist/* $(PKG_BUILD_DIR)/webrender/web ; \
 		find $(PKG_BUILD_DIR)/webrender/web -type f -size +4k ! -name "*.gz" ! -name "*.woff"  ! -name "*.woff2" -exec sh -c '\
