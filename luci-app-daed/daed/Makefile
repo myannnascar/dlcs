@@ -121,16 +121,18 @@ DAE_CFLAGS:= \
 define Build/Compile
 	( \
 		pushd $(PKG_BUILD_DIR) ; \
-		$(MAKE) deps ; \
+		env -u ARCH GOARCH="$(GO_ARCH)" $(MAKE) deps ; \
 		$(GO_GENERAL_BUILD_CONFIG_VARS) \
 		$(GO_PKG_BUILD_CONFIG_VARS) \
 		$(GO_PKG_BUILD_VARS); \
 		go generate ./... ; \
 		cd dae-core ; \
+		env -u ARCH \
 		BPF_CLANG="$(CLANG)" \
 		BPF_STRIP_FLAG="-strip=$(LLVM_STRIP)" \
 		BPF_CFLAGS="$(DAE_CFLAGS)" \
 		BPF_TARGET="bpfel,bpfeb" \
+		GOARCH="$(GO_ARCH)" \
 		go generate control/control.go ; \
 		popd ; \
 		$(call GoPackage/Build/Compile) ; \
