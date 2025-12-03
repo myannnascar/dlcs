@@ -6,7 +6,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=daed
 PKG_VERSION:=2025.11.03
-DAED_VERSION:=daed-dc70a1d
+DAED_VERSION:=daed-7b563b4
 WING_VERSION:=wing-6bb6a31
 CORE_VERSION:=core-7e67e31
 WING_HASH_SHORT:=$(shell echo $(WING_VERSION) | cut -d- -f2)
@@ -15,7 +15,7 @@ PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=dc70a1d11b0c7fa7b2ea0d447bcd9e61b5c7be00
+PKG_SOURCE_VERSION:=7b563b4d46edb8fd5021eaf2ae201c8b5348535a
 PKG_SOURCE_URL:=https://github.com/daeuniverse/daed.git
 PKG_MIRROR_HASH:=skip
 
@@ -27,16 +27,6 @@ PKG_BUILD_DIR=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)/wing
 PKG_BUILD_DEPENDS:=golang/host bpf-headers
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-mips16
-
-ifeq ($(ARCH),x86_64)
-  export BPF_KARCH:=x86
-else ifeq ($(ARCH),i386)
-  export BPF_KARCH:=x86
-else ifeq ($(ARCH),aarch64)
-  export BPF_KARCH:=arm64
-else
-  export BPF_KARCH:=$(ARCH)
-endif
 
 GO_PKG:=github.com/daeuniverse/dae-wing
 GO_PKG_LDFLAGS:= \
@@ -141,7 +131,6 @@ define Build/Compile
 		BPF_STRIP_FLAG="-strip=$(LLVM_STRIP)" \
 		BPF_CFLAGS="$(DAE_CFLAGS)" \
 		BPF_TARGET="bpfel,bpfeb" \
-		BPF_KARCH="$(BPF_KARCH)" \
 		go generate control/control.go ; \
 		popd ; \
 		$(call GoPackage/Build/Compile) ; \
